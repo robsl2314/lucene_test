@@ -23,13 +23,14 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.commons.io.IOUtils;
-import org.apache.lucene.store.RAMDirectory;
+import org.apache.lucene.store.SimpleFSDirectory;
 
 import org.jwat.warc.WarcReader;
 import org.jwat.warc.WarcReaderFactory;
@@ -41,27 +42,9 @@ import org.jwat.warc.WarcRecord;
  */
 public class LuceneProject {
 
-    /**
-     * @param args the command line arguments
-     */
-    public static void main(String[] args) throws Exception {
-        Analyzer analyzer = new StandardAnalyzer();
-
-        // 1. create the index
-//        Directory index = new SimpleFSDirectory(new File("test.lucene").toPath());
-        Directory index = new RAMDirectory();
-
-        IndexWriterConfig config = new IndexWriterConfig(analyzer);
-
-        IndexWriter w = new IndexWriter(index, config);
-
-        String fn = "E:\\ClueWeb09_English_Sample.warc";
-        File file = new File(fn);
+    private static void readWarc(File file, IndexWriter w) {
         try {
             InputStream in = new FileInputStream(file);
-
-            int records = 0;
-            int errors = 0;
 
             WarcReader reader = WarcReaderFactory.getReader(in);
             WarcRecord record;
@@ -76,65 +59,117 @@ public class LuceneProject {
 
                 String title = m.find() ? m.group(1) : "NO TITLE";
 
-                addDoc(w, title, payload);
-
-                ++records;
+                addDocToIndex(w, title, payload);
             }
-
-            System.out.println("--------------");
-            System.out.println("       Records: " + records + " added");
-            System.out.println("        Errors: " + errors + " found");
             reader.close();
             in.close();
-
-        } catch (FileNotFoundException e) {
-            // TODO Auto-generated catch block
-            e.printStackTrace();
+        } catch (Exception e) {
         }
-
-//        if (true) {
-//            return;
-//        }
-//        addDoc(w, "Lucene in Action", "193398817");
-//        addDoc(w, "Lucene for Dummies", "55320055Z");
-//        addDoc(w, "Managing Gigabytes", "55063554A");
-//        addDoc(w, "The Art of Computer Science", "9900333X");
-        w.close();
-        // 2. query
-        String querystr = args.length > 0 ? args[0] : "test";
-
-        // the "title" arg specifies the default field to use
-        // when no field is explicitly specified in the query.
-        Query q = new QueryParser("payload", analyzer).parse(querystr);
-
-        // 3. search
-        int hitsPerPage = 10;
-        IndexReader reader = DirectoryReader.open(index);
-        IndexSearcher searcher = new IndexSearcher(reader);
-        TopDocs docs = searcher.search(q, hitsPerPage);
-        ScoreDoc[] hits = docs.scoreDocs;
-
-        // 4. display results
-        System.out.println("Found " + hits.length + " hits.");
-        for (int i = 0; i < hits.length; ++i) {
-            int docId = hits[i].doc;
-            Document d = searcher.doc(docId);
-//            System.out.println((i + 1) + ". " + d.get("isbn") + "\t" + d.get("title") + "   " + d.toString());
-            System.out.println(d.get("title"));
-        }
-
-        // reader can only be closed when there
-        // is no need to access the documents any more.
-        reader.close();
     }
 
-    private static void addDoc(IndexWriter w, String title, String payload) throws IOException {
+    private static Document getDocumentById(int id, Directory index) {
+        try {
+            IndexReader reader = DirectoryReader.open(index);
+            IndexSearcher searcher = new IndexSearcher(reader);
+            return searcher.doc(id);
+        } catch (IOException ex) {
+            Logger.getLogger(LuceneProject.class.getName()).log(Level.SEVERE, null, ex);
+            return null;
+        }
+    }
+
+    private static void addDocToIndex(IndexWriter w, String title, String payload) throws IOException {
         Document doc = new Document();
 
         doc.add(new StringField("title", title, Field.Store.YES));
         doc.add(new TextField("payload", payload, Field.Store.YES));
 
         w.addDocument(doc);
+    }
+
+    private static ScoreDoc[] query(String query, Analyzer analyzer, Directory index) {
+        try {
+
+            // the "title" arg specifies the default field to use
+            // when no field is explicitly specified in the query.
+            Query q = new QueryParser("payload", analyzer).parse(query);
+
+            // 3. search
+            int hitsPerPage = 10;
+            IndexReader reader = DirectoryReader.open(index);
+            IndexSearcher searcher = new IndexSearcher(reader);
+            TopDocs docs = searcher.search(q, hitsPerPage);
+            reader.close();
+            return docs.scoreDocs;
+
+            // reader can only be closed when there
+            // is no need to access the documents any more.
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * @param args the command line arguments
+     * @throws java.io.IOException
+     */
+    public static void main(String[] args) throws IOException {
+
+        if (args.length == 2) {
+
+            Analyzer analyzer = new StandardAnalyzer();
+            Directory index;
+            index = new SimpleFSDirectory(new File("lucene.index").toPath());
+
+            switch (args[0]) {
+                case "addwarc":
+                    try {
+                        IndexWriterConfig config = new IndexWriterConfig(analyzer);
+                        IndexWriter w = new IndexWriter(index, config);
+                        String fn = args[1];
+                        File file = new File(fn);
+                        readWarc(file, w);
+                        w.close();
+                        System.out.println("Success");
+                    } catch (Exception e) {
+                        Logger.getLogger(LuceneProject.class.getName()).log(Level.SEVERE, null, e);
+                        System.err.println("Error");
+                    }
+                    break;
+                case "query":
+                    ScoreDoc[] hits = query(args[1], analyzer, index);
+                    if(hits != null){
+                        System.out.println("Found " + hits.length + " hits.");
+                        for (int i = 0; i < hits.length; ++i) {
+                            ScoreDoc d = hits[i];
+                            Document doc = getDocumentById(i, index);
+                            System.out.println(d.toString() + " - " + doc.get("title"));
+                        }
+                    }else{
+                        System.out.println("No Results");
+                    }
+                    break;
+                case "getDoc":
+                    Document doc = getDocumentById(Integer.parseInt(args[1]), index);
+                    System.out.println(doc.get("payload"));
+                    break;
+                default:
+                    System.out.println("possible commands:"
+                            + "\naddwarc [warc file]"
+                            + "\nquery [query string]"
+                            + "\ntry again...");
+                    break;
+            }
+            
+            index.close();
+            analyzer.close();
+        } else {
+            return;
+        }
+
+        if (true) {
+            return;
+        }
     }
 
 }
